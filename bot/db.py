@@ -1,0 +1,200 @@
+import sqlite3
+
+from bot.config import AppConfig
+from bot.utils.logger import get_logger
+
+log = get_logger()
+config = AppConfig()
+
+
+class Error(Exception):
+    """Custom exception class for database."""
+
+
+def sqlite_connect(db_file: str) -> sqlite3.Connection:
+    """Connect to the database file."""
+
+    try:
+        conn = sqlite3.connect(db_file, check_same_thread=False)
+        conn.execute("pragma journal_mode=wal;")
+        return conn
+    except sqlite3.Error as error:
+        log.critical("Can't connect to the database - %s", error)
+        raise error
+
+
+def send_query(query: str, args: tuple | None = None) -> sqlite3.Cursor:  # type: ignore
+    """Send query to database and return cursor object."""
+
+    if not args:
+        args = tuple()
+
+    with sqlite_connect(config.DB_FILE) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query, args)
+            conn.commit()
+        except sqlite3.Error as error:
+            log.error("Can't send query to the database - %s", error)
+            raise error
+        return cursor
+
+
+def execute_script(script_file: str):
+    """Execute SQL script from file."""
+
+    try:
+        with open(script_file, "r", encoding="utf-8") as script:
+            sql = script.read()
+    except OSError as error:
+        log.critical("Can't read from SQL script file: %s", error)
+        raise SystemExit from error
+
+    with sqlite_connect(config.DB_FILE) as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.executescript(sql)
+            conn.commit()
+        except sqlite3.Error as error:
+            log.error("Can't send query to the database - %s", error)
+            raise error
+
+
+async def insert_match(
+    original: str,
+    slowed: str,
+    user_id: int,
+    private: bool = True,
+    forbidden: bool = False,
+) -> int | None:
+    """Insert row with original and slowed file ids."""
+
+    query = send_query(
+        '''INSERT INTO
+        match (original, slowed, user_id, private, forbidden)
+        VALUES (?, ?, ?, ?, ?);''',
+        (
+            original,
+            slowed,
+            user_id,
+            private,
+            forbidden,
+        ),
+    )
+    return query.lastrowid
+
+
+async def get_match(original: str) -> tuple | None:
+    """Get row of pair original and slowed file ids."""
+
+    query = send_query(
+        'SELECT * FROM match WHERE original = ?;',
+        (original,),
+    )
+    return query.fetchone()
+
+
+
+async def get_by_pk(table: str, pk: int) -> tuple | None:
+    """Get the row by its id from a given table."""
+
+    query = send_query(
+        f'SELECT * FROM {table} WHERE id = ?;',
+        (pk,),
+    )
+    return query.fetchone()
+
+
+async def toggle_private(idc: int, is_private: bool = True) -> None:
+    """Toggle private status for slowed row."""
+
+    send_query(
+        'UPDATE match SET private = ? WHERE id = ?;',
+        (
+            is_private,
+            idc,
+        ),
+    )
+
+
+async def toggle_forbidden(idc: int, is_forbidden: bool = True) -> None:
+    """Toggle forbidden status for slowed row."""
+
+    send_query(
+        'UPDATE match SET forbidden = ? WHERE id = ?;',
+        (
+            is_forbidden,
+            idc,
+        ),
+    )
+
+
+
+async def get_queue_count(user_id: int) -> int:
+    """Returns cout of task in queue for user."""
+
+    query = send_query(
+        'SELECT * FROM queue WHERE user_id = ?;',
+        (user_id,),
+    )
+
+    if row := query.fetchone():
+        return row[2]
+
+    return 0
+
+
+async def inc_queue_count(user_id: int) -> int:
+    """Increase count for queue of user tasks."""
+
+    send_query(
+        '''INSERT OR REPLACE INTO queue
+        VALUES (
+            NULL,
+            :user,
+            COALESCE((SELECT count FROM queue WHERE user_id = :user), 0) + 1
+        );''',
+        (user_id,),
+    )
+
+
+async def dec_queue_count(user_id: int) -> int:
+    """Decrease count for queue of user tasks."""
+
+    send_query(
+        '''INSERT OR REPLACE INTO queue
+        VALUES (
+            NULL,
+            :user_id,
+            COALESCE(
+                NULLIF(
+                    (SELECT count FROM queue WHERE user_id = :user_id),
+                    0
+                ),
+                1
+            ) - 1
+        );''',
+        (user_id,),
+    )
+
+
+async def add_user(user_id: int, username: str) -> None:
+    """Add new user to database."""
+
+    send_query(
+        '''INSERT OR IGNORE INTO
+        users (user_id, username)
+        VALUES (?, ?);''',
+        (
+            user_id,
+            username,
+        ),
+    )
+
+
+async def users_count() -> int:
+    """Returns count of users in database."""
+
+    query = send_query('''SELECT COUNT(id) FROM users;''')
+    return query.fetchone()[0]
+

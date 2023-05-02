@@ -1,0 +1,59 @@
+version: "1"
+services:
+  app:
+    container_name: pg-church-bot
+    hostname: pgchurchbot
+    build: .
+    init: true
+    volumes:
+      - bot-data:/app/data
+    environment:
+      # DEBUG: 0
+      PYTHONUNBUFFERED: 1
+      PYTHONDONTWRITEBYTECODE: 1
+      REDIS_HOST: cache
+      REDIS_PORT: 6379
+    env_file:
+      - ./.env
+    restart: on-failure
+    depends_on:
+      - cache
+    networks:
+      - internal
+      - external
+  cache:
+    container_name: pg-church-bot-cache
+    hostname: pgchurchbot-cache
+    image: redis:7.0.9-alpine
+    restart: always
+    ports:
+      - 6379:6379
+    command: redis-server --save 300 1 --loglevel warning
+    volumes:
+      - bot-cache:/data
+    networks:
+      - internal
+  webhook:
+    container_name: pg-church-bot-webhook
+    hostname: pgchurchbot-webhook
+    image: nginx:stable-alpine
+    restart: always
+    depends_on:
+      - app
+    ports:
+      - 8080:8080
+    networks:
+      - external
+      - internal
+    volumes:
+      - ./webhook:/etc/nginx/templates
+volumes:
+  bot-data:
+  bot-cache:
+networks:
+  external:
+    name: pg-church-bot-network
+    internal: false
+  internal:
+    name: pg-church-bot-internal
+    internal: true
